@@ -119,21 +119,17 @@ func buildResource(path string, querys map[string]any, bodys map[string]string) 
 		val string
 	}
 	var merged []kv
-	if querys != nil {
-		for k, v := range querys {
-			if k == "" {
-				continue
-			}
-			merged = append(merged, kv{k, toString(v)})
+	for k, v := range querys {
+		if k == "" {
+			continue
 		}
+		merged = append(merged, kv{k, toString(v)})
 	}
-	if bodys != nil {
-		for k, v := range bodys {
-			if k == "" {
-				continue
-			}
-			merged = append(merged, kv{k, v})
+	for k, v := range bodys {
+		if k == "" {
+			continue
 		}
+		merged = append(merged, kv{k, v})
 	}
 	sort.Slice(merged, func(i, j int) bool { return merged[i].key < merged[j].key })
 
