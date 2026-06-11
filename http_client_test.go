@@ -58,11 +58,14 @@ func (es *echoServer) host(t *testing.T) (host string, path Path) {
 	return u.Host, Path{Schema: u.Scheme + "://", Path: "/api/v1/test"}
 }
 
-// newTestConfig 根据测试 server URL 构造 *Config。
+// newTestConfig 根据测试 server URL 构造一个空 ContextPath 的 *Config。
+//
+// 不传 contextPath 是为了让旧测试（不关心 ContextPath）的 path 断言
+// 保持原行为；ContextPath 相关测试在内部显式赋值 cfg.ContextPath。
 func newTestConfig(t *testing.T, es *echoServer) *Config {
 	t.Helper()
 	host, _ := es.host(t)
-	return NewConfig(host, contextPath, "test-ak", "test-sk")
+	return NewConfig(host, "", "test-ak", "test-sk")
 }
 
 func TestGet_QueryAndSignature(t *testing.T) {
@@ -652,5 +655,124 @@ func TestContextPath_AffectsSignature(t *testing.T) {
 	want := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 	if got != want {
 		t.Errorf("signature mismatch with ContextPath-joined path:\n got=%s\nwant=%s joined=%s", got, want, joined)
+	}
+}
+
+// newRedirectServer 返回一个始终响应 302 + Location 的 httptest server。
+//
+// targetURL 是 Location 头的目标地址；fixBody 为 true 时 body 写一行
+// "redirect-target" 便于断言不会跟过去。
+func newRedirectServer(t *testing.T, targetURL string, fixBody bool) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", targetURL)
+		w.WriteHeader(http.StatusFound) // 302
+		if fixBody {
+			_, _ = w.Write([]byte("redirect-target"))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// newRedirectConfig 用 redirect server 构造一个 *Config（host 与 server 一致）。
+func newRedirectConfig(t *testing.T, ts *httptest.Server) *Config {
+	t.Helper()
+	u, _ := url.Parse(ts.URL)
+	return NewConfig(u.Host, contextPath, "test-ak", "test-sk")
+}
+
+// TestPostStringResponse_Keeps302AndLocation 验证 PostStringResponse 透传
+// 302 + Location 头，不会自动 follow 到图片地址。
+func TestPostStringResponse_Keeps302AndLocation(t *testing.T) {
+	const picURL = "https://pic.example.com/event/dde962d0-17b3-4eb5-bb54-48f46429d7c7.jpg"
+	ts := newRedirectServer(t, picURL, true)
+	cfg := newRedirectConfig(t, ts)
+	p := Path{Schema: "http://", Path: "/api/acs/v1/event/pictures"}
+
+	resp, err := PostStringResponse(cfg, p,
+		`{"svrIndexCode":"x","picUri":"/pic?a=b"}`,
+		WithContentType(ContentTypeJSON),
+	)
+	if err != nil {
+		t.Fatalf("PostStringResponse: %v", err)
+	}
+	if resp.StatusCode != http.StatusFound {
+		t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusFound)
+	}
+	if got := resp.Headers["Location"]; got != picURL {
+		t.Errorf("Headers[Location] = %q, want %q", got, picURL)
+	}
+}
+
+// TestPostStringImg_Keeps302AndLocation 验证新增的 PostStringImg 公开 API
+// 行为与 PostStringResponse 一致：透传 302 + Location。
+func TestPostStringImg_Keeps302AndLocation(t *testing.T) {
+	const picURL = "https://pic.example.com/event/abc.jpg"
+	ts := newRedirectServer(t, picURL, true)
+	cfg := newRedirectConfig(t, ts)
+	p := Path{Schema: "http://", Path: "/api/acs/v1/event/pictures"}
+
+	resp, err := PostStringImg(cfg, p,
+		`{"svrIndexCode":"x","picUri":"/pic?a=b"}`,
+		WithContentType(ContentTypeJSON),
+	)
+	if err != nil {
+		t.Fatalf("PostStringImg: %v", err)
+	}
+	if resp.StatusCode != http.StatusFound {
+		t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusFound)
+	}
+	if got := resp.Headers["Location"]; got != picURL {
+		t.Errorf("Headers[Location] = %q, want %q", got, picURL)
+	}
+}
+
+// TestPostStringResponse_FollowsRedirectDisabled 验证 PostStringResponse /
+// PostStringImg 不会污染共享 cfg.HTTPClient() 的 CheckRedirect 策略。
+//
+// 走完 no-redirect 调用后，cfg.HTTPClient().CheckRedirect 应仍为 nil
+// （即 net/http 的 defaultCheckRedirect，自动 follow 3xx）。
+func TestPostStringResponse_FollowsRedirectDisabled(t *testing.T) {
+	const picURL = "https://pic.example.com/x.jpg"
+	ts := newRedirectServer(t, picURL, false)
+	cfg := newRedirectConfig(t, ts)
+	p := Path{Schema: "http://", Path: "/api/acs/v1/event/pictures"}
+
+	if _, err := PostStringResponse(cfg, p, `{}`, WithContentType(ContentTypeJSON)); err != nil {
+		t.Fatalf("PostStringResponse: %v", err)
+	}
+	if _, err := PostStringImg(cfg, p, `{}`, WithContentType(ContentTypeJSON)); err != nil {
+		t.Fatalf("PostStringImg: %v", err)
+	}
+
+	if got := cfg.HTTPClient().CheckRedirect; got != nil {
+		t.Errorf("shared HTTPClient().CheckRedirect was modified, want nil (type=%T)", got)
+	}
+}
+
+// TestNewNoRedirectClient_SharesTransport 验证 newNoRedirectClient 复用
+// 共享 Transport（连接池不被破坏），仅覆盖 CheckRedirect。
+func TestNewNoRedirectClient_SharesTransport(t *testing.T) {
+	cfg := NewConfig("127.0.0.1:443", "/artemis", "ak", "sk")
+	base := cfg.HTTPClient()
+	noRedir := newNoRedirectClient(cfg)
+
+	if noRedir.Transport != base.Transport {
+		t.Error("Transport not shared with base HTTPClient")
+	}
+	if noRedir.Timeout != base.Timeout {
+		t.Errorf("Timeout = %v, want %v", noRedir.Timeout, base.Timeout)
+	}
+	if noRedir.CheckRedirect == nil {
+		t.Error("CheckRedirect should be set to disable auto-follow")
+	}
+	// 调用 CheckRedirect 应当返回 http.ErrUseLastResponse。
+	if err := noRedir.CheckRedirect(nil, nil); err != http.ErrUseLastResponse {
+		t.Errorf("CheckRedirect err = %v, want http.ErrUseLastResponse", err)
+	}
+	// 共享 client 不受影响。
+	if base.CheckRedirect != nil {
+		t.Error("base HTTPClient().CheckRedirect was modified")
 	}
 }

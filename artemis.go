@@ -155,11 +155,30 @@ func PostString(cfg *Config, p Path, body string, opts ...Option) (string, error
 }
 
 // PostStringResponse 文本 POST 的二进制下载变体。
+//
+// 内部走 httpPostStringNoRedirect：artemis 网关在图片下载场景会返回
+// 302 + Location: <图片URL>，调用方需要拿到原始 Location 头再自行下载，
+// 因此本方法关闭 3xx 自动重定向，透传 302/304 到
+// *Response.Headers["Location"]。非 302/304 场景行为不变。
 func PostStringResponse(cfg *Config, p Path, body string, opts ...Option) (*Response, error) {
 	o := applyOptions(MethodPostStringResponse, p, opts)
 	req := buildRequest(cfg, p, MethodPostStringResponse, o)
 	req.StringBody = body
-	return dispatchRequest(cfg, req)
+	return httpPostStringNoRedirect(cfg, req)
+}
+
+// PostStringImg 发起 POST 请求并保留完整 *Response，用于图片下载 302/304
+// 重定向场景。
+//
+// 业务场景：artemis 网关返回 302 + Location: <图片URL>，调用方从
+// resp.Headers["Location"] 拿到图片 URL 后可自行下载。
+//
+// 等价于 Java ArtemisHttpUtil.doPostStringImgArtemis。
+func PostStringImg(cfg *Config, p Path, body string, opts ...Option) (*Response, error) {
+	o := applyOptions(MethodPostStringResponse, p, opts)
+	req := buildRequest(cfg, p, MethodPostStringResponse, o)
+	req.StringBody = body
+	return httpPostStringNoRedirect(cfg, req)
 }
 
 // PostBytes 发起 application/octet-stream POST 并返回响应体字符串。

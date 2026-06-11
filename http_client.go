@@ -165,7 +165,24 @@ func httpPostString(cfg *Config, req *Request) (*Response, error) {
 }
 
 // httpPostStringResponse 文本 POST 的二进制下载变体。
+//
+// 内部走 httpPostStringNoRedirect：artemis 网关在图片下载场景会返回
+// 302 + Location，调用方需要拿到原始 Location 头，因此本方法关闭
+// 3xx 自动重定向，透传 302/304 到 *Response.Headers["Location"]。
 func httpPostStringResponse(cfg *Config, req *Request) (*Response, error) {
+	return httpPostStringNoRedirect(cfg, req)
+}
+
+// httpPostStringNoRedirect 文本 POST 的 302/304 透传实现。
+//
+// 使用 newNoRedirectClient 关闭 *http.Client 的 3xx 自动跟随，使
+// 302/304 响应与其 Location 头能够透传至 *Response.Headers["Location"]，
+// 供调用方在图片/资源重定向场景中读取后自行下载。
+//
+// 与早期"自动 follow 3xx"的行为差异：当前实现保留原始 302/304，
+// 调用方通过 resp.StatusCode == 302 || 304 判断后从
+// resp.Headers["Location"] 取出真正的图片 URL。
+func httpPostStringNoRedirect(cfg *Config, req *Request) (*Response, error) {
 	if _, ok := req.Headers[HeaderContentType]; !ok {
 		req.Headers[HeaderContentType] = ContentTypeText
 	}
@@ -185,11 +202,26 @@ func httpPostStringResponse(cfg *Config, req *Request) (*Response, error) {
 	}
 	applyHeaders(httpReq, req.Headers)
 	httpReq.Header.Set(HeaderContentType, ct)
-	resp, err := cfg.HTTPClient().Do(httpReq)
+	resp, err := newNoRedirectClient(cfg).Do(httpReq)
 	if err != nil {
 		return nil, err
 	}
 	return convertResponse(resp, true)
+}
+
+// newNoRedirectClient 返回一个禁用 3xx 自动跟随的 *http.Client。
+//
+// 复用 cfg.HTTPClient() 的 Transport 以共享连接池，仅覆盖 CheckRedirect
+// 策略；不修改共享 client 实例本身，避免影响其它调用的重定向行为。
+func newNoRedirectClient(cfg *Config) *http.Client {
+	base := cfg.HTTPClient()
+	return &http.Client{
+		Transport: base.Transport,
+		Timeout:   base.Timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 }
 
 // httpPostBytes 字节数组 POST。若 body 非空，写入 Content-MD5。

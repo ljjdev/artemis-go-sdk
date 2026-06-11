@@ -13,11 +13,20 @@ import (
 	artemis "github.com/ljjdev/artemis-go-sdk"
 )
 
-const contextPath = "/artemis"
+// 示例 / 集成测试共用的占位网关与凭证。
+//
+// 目的：发布时不留真实环境信息。所有值都指向本地回环 + 占位 ak/sk，
+// 真实集成测试可临时改此处的常量；务必勿在 commit 中保留真实 host/ak/sk。
+const (
+	contextPath = "/artemis"
+	hostTest    = "127.0.0.1:80"
+	akTest      = "test"
+	skTest      = "test"
+)
 
 // demoGet 演示一次最简单的 GET 调用。
 func demoGet() {
-	cfg := artemis.NewConfig("artemis.example.com:443", contextPath, "your-app-key", "your-app-secret")
+	cfg := artemis.NewConfig(hostTest, contextPath, akTest, skTest)
 	cfg.InsecureTLS = false // 生产环境务必关闭证书跳过
 
 	path := artemis.Path{Schema: artemis.HTTPSchemaHTTPS, Path: "/api/v1/camera/list"}
@@ -34,7 +43,7 @@ func demoGet() {
 
 // demoPostString 演示 JSON 字符串 POST。
 func demoPostString() {
-	cfg := artemis.NewConfig("artemis.example.com:443", contextPath, "ak", "sk")
+	cfg := artemis.NewConfig(hostTest, contextPath, akTest, skTest)
 	path := artemis.Path{Schema: artemis.HTTPSchemaHTTPS, Path: "/api/v1/event/subscribe"}
 
 	body, err := artemis.PostString(cfg, path,
@@ -49,7 +58,7 @@ func demoPostString() {
 
 // demoPostFileForm 演示 multipart 文件上传。
 func demoPostFileForm() {
-	cfg := artemis.NewConfig("artemis.example.com:443", contextPath, "ak", "sk")
+	cfg := artemis.NewConfig(hostTest, contextPath, akTest, skTest)
 	path := artemis.Path{Schema: artemis.HTTPSchemaHTTPS, Path: "/api/v1/face/upload"}
 
 	body, err := artemis.PostFileForm(cfg, path, map[string]any{
@@ -64,7 +73,7 @@ func demoPostFileForm() {
 
 // demoDownload 演示二进制下载（图片/录像）。
 func demoDownload() {
-	cfg := artemis.NewConfig("artemis.example.com:443", contextPath, "ak", "sk")
+	cfg := artemis.NewConfig(hostTest, contextPath, akTest, skTest)
 	path := artemis.Path{Schema: artemis.HTTPSchemaHTTPS, Path: "/api/v1/camera/preview"}
 
 	resp, err := artemis.GetResponse(cfg, path)
@@ -84,8 +93,8 @@ func demoDownload() {
 // 等价于 Java 端 ARTEMIS_PATH + "/api/..." 的手工拼接，但只需在 Config 上
 // 配置一次，所有 API 调用共享同一前缀。
 func demoContextPath() {
-	cfg := artemis.NewConfig("artemis.example.com:443", contextPath, "ak", "sk")
-	cfg.ContextPath = "/artemis" // 全局一次配置
+	cfg := artemis.NewConfig(hostTest, contextPath, akTest, skTest)
+	cfg.ContextPath = contextPath // 全局一次配置
 
 	// 调用时 Path.Path 只传 API 地址，不再重复写 /artemis 前缀
 	path := artemis.Path{Schema: artemis.HTTPSchemaHTTPS, Path: "/api/eventService/v1/eventSubscriptionView"}
@@ -123,9 +132,9 @@ func TestExampleEnd2End(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	// 构造一个 *Config 调用示例 API。
+	// 构造一个 *Config 调用示例 API。host 用回环 server 的真实 host。
 	u, _ := url.Parse(srv.URL)
-	cfg := artemis.NewConfig(u.Host, contextPath, "example-ak", "example-sk")
+	cfg := artemis.NewConfig(u.Host, contextPath, akTest, skTest)
 	cfg.InsecureTLS = true
 	p := artemis.Path{Schema: u.Scheme + "://", Path: "/api/v1/example"}
 
@@ -194,7 +203,7 @@ func TestExampleEnd2End(t *testing.T) {
 }
 
 func TestSubOrgList(t *testing.T) {
-	cfg := artemis.NewConfig("127.0.0.1", contextPath, "test", "test")
+	cfg := artemis.NewConfig(hostTest, contextPath, akTest, skTest)
 	cfg.InsecureTLS = true
 	path := artemis.Path{Schema: artemis.HTTPSchemaHTTP, Path: "/api/resource/v1/org/parentOrgIndexCode/subOrgList"}
 	body, err := artemis.PostString(cfg, path,
@@ -208,7 +217,7 @@ func TestSubOrgList(t *testing.T) {
 }
 
 func TestEventSubscriptionView(t *testing.T) {
-	cfg := artemis.NewConfig("127.0.0.1	", contextPath, "test", "test")
+	cfg := artemis.NewConfig(hostTest, contextPath, akTest, skTest)
 	cfg.InsecureTLS = true
 	path := artemis.Path{Schema: artemis.HTTPSchemaHTTP, Path: "/api/eventService/v1/eventSubscriptionView"}
 	body, err := artemis.Get(cfg, path,
@@ -222,5 +231,15 @@ func TestEventSubscriptionView(t *testing.T) {
 
 // 测试获取事件图片
 func TestGetEventPics(t *testing.T) {
-
+	cfg := artemis.NewConfig(hostTest, contextPath, akTest, skTest)
+	cfg.InsecureTLS = true
+	path := artemis.Path{Schema: artemis.HTTPSchemaHTTP, Path: "/api/acs/v1/event/pictures"}
+	resp, err := artemis.PostStringImg(cfg, path,
+		`{"svrIndexCode":"dde962d0-17b3-4eb5-bb54-48f46429d7c7","picUri":"/pic?8d86=6853i31-=o391bp24f8d636-5ebdb03b4*011s=**316==*p718=7t7578039070=0l2*1*6848=9o61f-13*lef-od36ba2493f1"}`,
+		artemis.WithContentType(artemis.ContentTypeJSON), artemis.WithHeader(map[string]string{"tagId": "tianchuang"}),
+	)
+	if err != nil {
+		t.Fatalf("PostStringResponse: %v", err)
+	}
+	t.Logf("StatusCode: %d, Location: %s", resp.StatusCode, resp.Headers["Location"])
 }
