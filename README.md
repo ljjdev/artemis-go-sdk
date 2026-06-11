@@ -117,3 +117,60 @@ go test -run TestSubOrgList -v ./...
 go test -run TestEventSubscriptionView -v ./...
 ```
 
+## 图片重定向（302/304）下载
+
+artemis 网关在事件图片下载接口上会返回 `302 + Location: <图片URL>`，由调用方自行 `GET Location` 拉取图片二进制。
+本 SDK 的 `PostStringResponse` / `PostStringImg` 默认**关闭** `*http.Client` 的 3xx 自动重定向，把 302/304 与 `Location` 头原样回传到 `*Response.Headers["Location"]`；其它方法（`Get` / `PostString` 等）继续享受自动重定向，共享连接池不受影响。
+
+```go
+package main
+
+import (
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+
+	artemis "github.com/ljjdev/artemis-go-sdk"
+)
+
+func main() {
+	const contextPath = "/artemis"
+
+	cfg := artemis.NewConfig("artemis.example.com:443", contextPath, "your-app-key", "your-app-secret")
+	path := artemis.Path{Schema: artemis.HTTPSchemaHTTPS, Path: "/api/acs/v1/event/pictures"}
+
+	resp, err := artemis.PostStringImg(cfg, path,
+		`{"svrIndexCode":"dde962d0-17b3-4eb5-bb54-48f46429d7c7","picUri":"/pic?..."}`,
+		artemis.WithContentType(artemis.ContentTypeJSON),
+	)
+	if err != nil {
+		fmt.Println("err:", err)
+		return
+	}
+	defer resp.Close()
+
+	switch resp.StatusCode {
+	case 302, 304:
+		// 1) 读取 Location 头
+		location := resp.Headers["Location"]
+		fmt.Println("redirect to:", location)
+
+		// 2) 自行 GET 拉取图片二进制并保存到本地
+		//    注意：有时效的图片必须尽快保存。
+		picResp, err := http.Get(location)
+		if err != nil {
+			fmt.Println("download err:", err)
+			return
+		}
+		defer picResp.Body.Close()
+		f, _ := os.Create("event.jpg")
+		defer f.Close()
+		_, _ = io.Copy(f, picResp.Body)
+	default:
+		// 其它状态码：业务错误
+		fmt.Println("status:", resp.StatusCode, "body:", resp.Body)
+	}
+}
+```
+
